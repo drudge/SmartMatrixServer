@@ -1,7 +1,6 @@
-FROM node:current-alpine
+FROM node:16-alpine
 
-
-RUN apk add --no-cache openssl tzdata libwebp-dev
+RUN apk add --no-cache openssl tzdata strace 
 
 WORKDIR /app
 COPY . .
