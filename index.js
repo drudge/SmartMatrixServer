@@ -2,8 +2,34 @@ const mqtt = require('mqtt')
 const fs = require('fs');
 const { ToadScheduler, SimpleIntervalJob, Task } = require('toad-scheduler');
 const { Watchdog } = require("watchdog");
+const WebP = require('node-webpmux');
 const { exit } = require('process');
 const {spawn} = require("child_process");
+
+globalThis.require = require;
+globalThis.fs = require("fs");
+globalThis.TextEncoder = require("util").TextEncoder;
+globalThis.TextDecoder = require("util").TextDecoder;
+globalThis.fetch = fetch;
+globalThis.Headers = fetch.Headers;
+globalThis.Response = fetch.Response;
+globalThis.Request = fetch.Request;
+
+globalThis.performance = {
+	now() {
+		const [sec, nsec] = process.hrtime();
+		return sec * 1000 + nsec / 1000000;
+	},
+};
+
+const crypto = require("crypto");
+globalThis.crypto = {
+	getRandomValues(b) {
+		crypto.randomFillSync(b);
+	},
+};
+
+require("./wasm_exec");
 
 /*
 
@@ -22,19 +48,24 @@ const client  = mqtt.connect(process.env.MQTT_HOSTNAME, {
 let { CONFIG_FOLDER } = process.env
 if(CONFIG_FOLDER === undefined) {
     console.log("CONFIG_FOLDER not set, using `/config` ...");
-    CONFIG_FOLDER = "/config";
+    CONFIG_FOLDER = "./config";
 }
 
 let { APPLET_FOLDER } = process.env
 if(APPLET_FOLDER === undefined) {
     console.log("APPLET_FOLDER not set, using `/applets` ...");
-    APPLET_FOLDER = "/applets";
+    APPLET_FOLDER = "./applets";
 }
+
+const go = new Go();
+go.env = Object.assign({ TMPDIR: require("os").tmpdir() }, process.env);
 
 const scheduler = new ToadScheduler();
 let chunkSize = 19950;
 
 let config = {};
+
+const pixletWasm = fs.readFileSync('./pixlet.wasm');
 
 const directory = fs.opendirSync(CONFIG_FOLDER)
 let file;
@@ -73,10 +104,40 @@ while ((file = directory.readSync()) !== null) {
 
 directory.closeSync()
 
+function loadPixlet(wasm) {
+    return WebAssembly.instantiate(wasm, go.importObject).then((result) => {
+        go.run(result.instance);
+        return new Promise(resolve => {
+            setTimeout(resolve, 2000);
+        })
+    });
+}
+
+async function getWebPImage(data, width, height) {
+    const img = await WebP.Image.getEmptyImage();
+    await img.initLib();
+    await img.setImageData(data, {
+        width,
+        height,
+    });
+    return img;
+}
+
+async function buildFrame(img, options = {}) {
+    return WebP.Image.generateFrame({
+        img, 
+        ...options,
+    });
+}
+
 async function deviceLoop(device) {
     if(config[device].jobRunning || config[device].connected == false) {
         return;
     }
+
+    console.log(`Running device loop for ${device}...`)
+
+    await loadPixlet(pixletWasm);
 
     config[device].jobRunning = true;
 
@@ -88,6 +149,8 @@ async function deviceLoop(device) {
         const applet = config[device].schedule[config[device].currentApplet];
         config[device].sendingStatus.isCurrentlySending = true;
 
+        console.log(`Rendering applet ${applet.name}...`)
+
         let imageData = await render(applet.name, applet.config ?? {}).catch((e) => {
             //upon failure, skip applet and retry.
             console.log(e);
@@ -96,9 +159,9 @@ async function deviceLoop(device) {
             if(config[device].currentApplet >= (config[device].schedule.length - 1)) {
                 config[device].currentApplet = -1;
             }
-            setTimeout(() => {
-                deviceLoop(device);
-            }, 5);
+            // setTimeout(() => {
+            //     deviceLoop(device);
+            // }, 5);
         })
 
         if(config[device].sendingStatus.isCurrentlySending) {
@@ -156,57 +219,60 @@ function gotDeviceResponse(device, message) {
     }
 }
 
+function toArrayBuffer(buffer) {
+    const arrayBuffer = new ArrayBuffer(buffer.length);
+    const view = new Uint8Array(arrayBuffer);
+    for (let i = 0; i < buffer.length; ++i) {
+        view[i] = buffer[i];
+    }
+    return arrayBuffer;
+}
+
 function render(name, config) {
     return new Promise(async (resolve, reject) => {
+
         let configValues = [];
-        for(const [k, v] of Object.entries(config)) {
-            if(typeof v === 'object') {
-                configValues.push(`${k}=${JSON.stringify(v)}`);
-            } else {
-                configValues.push(`${k}=${v}`);
-            }
+        for(const [name, v] of Object.entries(config)) {
+            configValues.push({
+                name,
+                value: typeof v === 'object' ? JSON.stringify(v) : v 
+            });
         }
         let outputError = "";
-        let unedited = fs.readFileSync(`${APPLET_FOLDER}/${name}/${name}.star`).toString()
-        if(unedited.indexOf(`load("cache.star", "cache")`) != -1) {
-            const redis_connect_string = `cache_redis.connect("${ process.env.REDIS_HOSTNAME }", "${ process.env.REDIS_USERNAME }", "${ process.env.REDIS_PASSWORD }")`
-            unedited = unedited.replaceAll(`load("cache.star", "cache")`, `load("cache_redis.star", "cache_redis")\n${redis_connect_string}`);
-            unedited = unedited.replaceAll(`cache.`, `cache_redis.`);
+        let unedited = await fs.promises.readFile(`${APPLET_FOLDER}/${name}/${name}.star`, { encoding: 'utf8'});
+        // if(unedited.indexOf(`load("cache.star", "cache")`) != -1) {
+        //     const redis_connect_string = `cache_redis.connect("${ process.env.REDIS_HOSTNAME }", "${ process.env.REDIS_USERNAME }", "${ process.env.REDIS_PASSWORD }")`
+        //     unedited = unedited.replaceAll(`load("cache.star", "cache")`, `load("cache_redis.star", "cache_redis")\n${redis_connect_string}`);
+        //     unedited = unedited.replaceAll(`cache.`, `cache_redis.`);
+        // }
+        // fs.writeFileSync(`${APPLET_FOLDER}/${name}/${name}.tmp.star`, unedited)
+        const { frames, delay } =  await pixlet.render(unedited, configValues);
+    
+        const outFrames = [];
+        let width = 64;
+        let height = 32;
+    
+        console.log(`Rendering ${frames.length} frames`);
+        for (let i = 0; i < frames.length; i++) {
+            const rawFrame = frames[i];
+            // console.log(rawFrame);
+    
+            const img = await getWebPImage(rawFrame.data, width, height);
+            const frame = await buildFrame(img, {
+                delay,
+            });
+            outFrames.push(frame);
+            width = rawFrame.width;
+            height = rawFrame.height;
         }
-        fs.writeFileSync(`${APPLET_FOLDER}/${name}/${name}.tmp.star`, unedited)
-
-        const renderCommand = spawn(`./pixlet/linux_${process.arch}/pixlet`, ['render', `${APPLET_FOLDER}/${name}/${name}.tmp.star`,...configValues,'-o',`${APPLET_FOLDER}/${name}/${name}.webp`]);
     
-        var timeout = setTimeout(() => {
-            console.log(`Rendering timed out for ${name}`);
-            try {
-              process.kill(renderCommand.pid, 'SIGKILL');
-            } catch (e) {
-              console.log('Could not kill process ^', e);
-            }
-        }, 10000);
-
-        renderCommand.stdout.on('data', (data) => {
-            outputError += data
-        })
-
-        renderCommand.stderr.on('data', (data) => {
-            outputError += data
-        })
-    
-        renderCommand.on('close', (code) => {
-            clearTimeout(timeout);
-            if(code == 0) {
-                if(outputError.indexOf("skip_execution") == -1) {
-                    resolve(fs.readFileSync(`${APPLET_FOLDER}/${name}/${name}.webp`));
-                } else {
-                    reject("Applet requested to skip execution...");
-                }
-            } else {
-                console.error(outputError);
-                reject("Applet failed to render.");
-            }
+        const webpData = await WebP.Image.save(null, {
+            frames: outFrames,
+            width,
+            height,
         });
+
+        resolve(toArrayBuffer(webpData));
     })
 }
 
@@ -222,7 +288,7 @@ client.on('connect', function () {
                 });
                 
                 const job = new SimpleIntervalJob(
-                    { seconds: 1, runImmediately: true },
+                    { seconds: 15, runImmediately: true },
                     task,
                     { id: `loop_${device}` }
                 );
