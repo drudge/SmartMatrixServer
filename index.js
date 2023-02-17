@@ -3,7 +3,10 @@ const fs = require('fs');
 const { ToadScheduler, SimpleIntervalJob, Task } = require('toad-scheduler');
 const { Watchdog } = require("watchdog");
 const { exit } = require('process');
-const {spawn} = require("child_process");
+const { spawn } = require("child_process");
+const { debuglog } = require('util');
+
+const debug = debuglog("smart-matrix-server");
 
 /*
 
@@ -74,6 +77,7 @@ while ((file = directory.readSync()) !== null) {
 directory.closeSync()
 
 async function deviceLoop(device) {
+    // debug("deviceLoop", device);
     if(config[device].jobRunning || config[device].connected == false) {
         return;
     }
@@ -87,6 +91,8 @@ async function deviceLoop(device) {
 
         const applet = config[device].schedule[config[device].currentApplet];
         config[device].sendingStatus.isCurrentlySending = true;
+
+        debug("rendering applet", applet.name, "for device", device);
 
         let imageData = await render(applet.name, applet.config ?? {}).catch((e) => {
             //upon failure, skip applet and retry.
@@ -201,6 +207,7 @@ function render(name, config) {
             clearTimeout(timeout);
             if(code == 0) {
                 if(outputError.indexOf("skip_execution") == -1) {
+                    debug(`rendered ${name} successfully!`);
                     resolve(fs.readFileSync(`${APPLET_FOLDER}/${name}/${name}.webp`));
                 } else {
                     reject("Applet requested to skip execution...");
