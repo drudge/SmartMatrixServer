@@ -1,4 +1,5 @@
-FROM node:18-alpine
+FROM node:current-alpine
+
 
 RUN apk add --no-cache openssl tzdata libwebp-dev
 
