@@ -1,8 +1,16 @@
 {
+  "name": "smart-matrix-server",
+  "version": "0.0.1",
+  "description": "Smart Matrix Server",
+  "main": "index.js",
+  "scripts": {
+    "start": "env $(cat .env | grep -v '#' | xargs) node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
   "dependencies": {
     "jsonwebtoken": "^9.0.0",
     "mqtt": "^4.3.7",
-    "toad-scheduler": "^2.1.0",
+    "toad-scheduler": "^2.2.0",
     "watchdog": "^0.8.17"
   }
 }
