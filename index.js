@@ -140,19 +140,20 @@ function gotDeviceResponse(device, message) {
         }
     } else {
         if(message == "DECODE_ERROR" || message == "PUSHED") {
+            debug(`${device} ${message}`);
             config[device].currentAppletStartedAt = Date.now();
             config[device].sendingStatus.isCurrentlySending = false;
             config[device].sendingStatus.hasSentLength = false;
             config[device].sendingStatus.currentBufferPos = 0;
             config[device].sendingStatus.buf = null;
         } else if(message == "DEVICE_BOOT") {
-            console.log("device is online!");
+            debug(`${device} is online!`);
             config[device].sendingStatus.isCurrentlySending = false;
             config[device].sendingStatus.hasSentLength = false;
             config[device].sendingStatus.currentBufferPos = 0;
             config[device].sendingStatus.buf = null;
         } else if(message == "TIMEOUT") {
-            console.log("device rx timeout!");
+            debug(`${device} rx timeout!`);
             config[device].sendingStatus.isCurrentlySending = false;
             config[device].sendingStatus.hasSentLength = false;
             config[device].sendingStatus.currentBufferPos = 0;
