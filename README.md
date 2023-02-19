@@ -1,17 +1,13 @@
 
-# SmartMatrixServer
-
-> Part of the SmartMatrix project.
+# smart-matrix-server
 
 SmartMatrix Server is an application that schedules the delivery of compiled Starlark applets to end devices over MQTT.
-
-This uses a custom fork of Pixlet to add a compatibility layer for Redis.
 
 ## Run with Docker Compose
 
 ```yml
   panel-led-mqtt:
-    image: ghcr.io/acvigue/plm-applet-sender:main
+    image: ghcr.io/drudge/smart-matrix-server:latest
     volumes:
       - ./applets:/applets
       - ./config:/config
