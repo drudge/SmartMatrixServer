@@ -199,9 +199,9 @@ function render(name, config) {
         let outputError = "";
         let unedited = fs.readFileSync(`${APPLET_FOLDER}/${name}/${name}.star`).toString()
 
-        if (process.env.USE_REDIS_CACHE === "true") {
+        if (typeof process.env.REDIS_HOSTNAME !== 'undefined') {
             if(unedited.indexOf(`load("cache.star", "cache")`) != -1) {
-                const redis_connect_string = `cache_redis.connect("${ process.env.REDIS_HOSTNAME }", "${ process.env.REDIS_USERNAME }", "${ process.env.REDIS_PASSWORD }")`
+                const redis_connect_string = `cache_redis.connect("${ process.env.REDIS_HOSTNAME }", "${ process.env.REDIS_USERNAME || '' }", "${ process.env.REDIS_PASSWORD || '' }")`
                 unedited = unedited.replaceAll(`load("cache.star", "cache")`, `load("cache_redis.star", "cache_redis")\n${redis_connect_string}`);
                 unedited = unedited.replaceAll(`cache.`, `cache_redis.`);
             }
