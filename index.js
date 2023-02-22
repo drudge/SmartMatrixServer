@@ -34,6 +34,14 @@ if(APPLET_FOLDER === undefined) {
     APPLET_FOLDER = "/applets";
 }
 
+let { DEVICE_LOOP_INTERVAL } = process.env
+if(DEVICE_LOOP_INTERVAL === undefined) {
+    console.log("DEVICE_LOOP_INTERVAL not set, using 1 second ...");
+    DEVICE_LOOP_INTERVAL = "1";
+}
+DEVICE_LOOP_INTERVAL = parseInt(DEVICE_LOOP_INTERVAL, 10);
+console.log(`Devices will loop every ${DEVICE_LOOP_INTERVAL} seconds`);
+
 const scheduler = new ToadScheduler();
 let chunkSize = 19950;
 
@@ -187,7 +195,7 @@ function render(name, config) {
 
         const renderCommand = spawn('pixlet', ['render', `${APPLET_FOLDER}/${name}/${name}.tmp.star`,...configValues,'-o',`${APPLET_FOLDER}/${name}/${name}.webp`]);
     
-        var timeout = setTimeout(() => {
+        const timeout = setTimeout(() => {
             console.log(`Rendering timed out for ${name}`);
             try {
               process.kill(renderCommand.pid, 'SIGKILL');
@@ -233,7 +241,7 @@ client.on('connect', function () {
                 });
                 
                 const job = new SimpleIntervalJob(
-                    { seconds: 1, runImmediately: true },
+                    { seconds: DEVICE_LOOP_INTERVAL, runImmediately: true },
                     task,
                     { id: `loop_${device}` }
                 );
