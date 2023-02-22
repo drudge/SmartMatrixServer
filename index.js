@@ -149,7 +149,7 @@ async function deviceLoop(device) {
 function gotDeviceResponse(device, message) {
     config[device].offlineWatchdog.feed();
     if(message == "OK") {
-        if(config[device].sendingStatus.currentBufferPos <= config[device].sendingStatus.buf.length) {
+        if(config[device].sendingStatus.buf !== null && config[device].sendingStatus.currentBufferPos <= config[device].sendingStatus.buf.length) {
             if(config[device].sendingStatus.hasSentLength == false) {
                 config[device].sendingStatus.hasSentLength = true;
                 client.publish(`plm/${device}/rx`, config[device].sendingStatus.buf.length.toString());
