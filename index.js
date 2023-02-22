@@ -64,6 +64,16 @@ while ((file = directory.readSync()) !== null) {
 
     let schedule = fs.readFileSync(scheduleFilePath);
 
+    let postProcessFilePath = `${CONFIG_FOLDER}/${device.toUpperCase()}.post.js`;
+    let postProcess;
+    if(fs.existsSync(postProcessFilePath)) {
+        try {
+            postProcess = require(postProcessFilePath);
+        } catch (error) {
+            console.error("Error loading post process file for device", postProcessFilePath, device, error);
+        }
+    }
+
     config[device] = {
         currentApplet: -1,
         currentAppletStartedAt: 0,
@@ -78,7 +88,8 @@ while ((file = directory.readSync()) !== null) {
         },
         jobRunning: false,
         offlineWatchdog: null,
-        schedule: JSON.parse(schedule)
+        schedule: JSON.parse(schedule),
+        postProcess,
     }
 }
 
@@ -102,7 +113,7 @@ async function deviceLoop(device) {
 
         debug("rendering applet", applet.name, "for device", device);
 
-        let imageData = await render(applet.name, applet.config ?? {}).catch((e) => {
+        let imageData = await render(applet.name, applet.config ?? {}).catch(async (e) => {
             //upon failure, skip applet and retry.
             console.log(e);
             config[device].currentApplet++;
@@ -125,6 +136,10 @@ async function deviceLoop(device) {
             if(config[device].currentApplet >= (config[device].schedule.length - 1)) {
                 config[device].currentApplet = -1;
             }
+        }
+
+        if (typeof config[device].postProcess === 'function') {
+            await config[device].postProcess(applet);
         }
     }
 
