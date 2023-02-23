@@ -19,6 +19,7 @@ module.exports = async function onAppletRender(applet) {
             deviceId,
             `${APPLET_FOLDER}/${name}/${name}.webp`
         ];
+        let outputError = '';
 
         if (apiToken) {
             pushArgs.push('--api-token');
@@ -37,7 +38,7 @@ module.exports = async function onAppletRender(applet) {
         debug(`pushing ${name} to ${tidbyts[i].deviceId}${background ? ' in the background' : ''}...`);
 
         const pushCommand = spawn('pixlet', pushArgs);
-    
+        
         const timeout = setTimeout(() => {
             console.log(`Rendering timed out for ${name}`);
             try {
@@ -61,7 +62,7 @@ module.exports = async function onAppletRender(applet) {
                 debug(`pushed ${name} to ${deviceId} successfully!`);
             } else {
                 console.error(outputError);
-                reject("Applet failed to push.");
+                debug("Applet failed to push.");
             }
         });
     }
