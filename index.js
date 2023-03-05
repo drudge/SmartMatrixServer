@@ -47,7 +47,7 @@ let chunkSize = 19950;
 
 let config = {};
 
-const directory = fs.opendirSync(CONFIG_FOLDER)
+const directory = fs.opendirSync(CONFIG_FOLDER);
 let file;
 
 while ((file = directory.readSync()) !== null) {
@@ -63,6 +63,10 @@ while ((file = directory.readSync()) !== null) {
     }
 
     let schedule = fs.readFileSync(scheduleFilePath);
+
+    fs.watchFile(scheduleFilePath, async () => {
+        await reloadConfig(device);
+    });
 
     let postProcessFilePath = `${CONFIG_FOLDER}/${device.toUpperCase()}.post.js`;
     let postProcess;
@@ -84,16 +88,32 @@ while ((file = directory.readSync()) !== null) {
             currentBufferPos: 0,
             buf: null,
             hasSentLength: false,
-            isCurrentlySending: false
+            isCurrentlySending: false,
         },
         jobRunning: false,
         offlineWatchdog: null,
         schedule: JSON.parse(schedule),
         postProcess,
-    }
+    };
 }
 
-directory.closeSync()
+directory.closeSync();
+
+function reloadConfig(device) {
+    let scheduleFilePath = `${CONFIG_FOLDER}/${device.toUpperCase()}.json`;
+    if(!fs.existsSync(scheduleFilePath)) {
+        console.log("Schedule file for device does not exist!");
+        return;
+    }
+
+    debug("Reloading config for device", device);
+
+    let schedule = fs.readFileSync(scheduleFilePath);
+    config[device].schedule = JSON.parse(schedule);
+    config[device].currentApplet = -1;
+    config[device].currentAppletStartedAt = 0;
+    config[device].sendingStatus.isCurrentlySending = false;
+}
 
 async function deviceLoop(device) {
     // debug("deviceLoop", device);
@@ -206,7 +226,7 @@ function render(name, config) {
                 unedited = unedited.replaceAll(`cache.`, `cache_redis.`);
             }
         }
-        fs.writeFileSync(`${APPLET_FOLDER}/${name}/${name}.tmp.star`, unedited)
+        fs.writeFileSync(`${APPLET_FOLDER}/${name}/${name}.tmp.star`, unedited);
 
         const renderCommand = spawn('pixlet', ['render', `${APPLET_FOLDER}/${name}/${name}.tmp.star`,...configValues,'-o',`${APPLET_FOLDER}/${name}/${name}.webp`]);
     
@@ -227,8 +247,9 @@ function render(name, config) {
             outputError += data
         })
     
-        renderCommand.on('close', (code) => {
+        renderCommand.on('close', async (code) => {
             clearTimeout(timeout);
+            await fs.promises.unlink(`${APPLET_FOLDER}/${name}/${name}.tmp.star`);
             if(code == 0) {
                 if(outputError.indexOf("skip_execution") == -1) {
                     debug(`rendered ${name} successfully!`);
@@ -278,25 +299,24 @@ client.on('connect', function () {
 
                 config[device].offlineWatchdog = dog;
             } else {
-                console.log(`Couldn't subscribe to ${device} response channel.`);
+                debug(`Couldn't subscribe to ${device} response channel.`);
             }
         })
     }
 });
 
 client.on("disconnect", function() {
-    scheduler.stop()
-    exit(1);
+    scheduler.stop();
+    client.reconnect();
 });
 
 client.on("error", function() {
-    scheduler.stop()
-    exit(1);
+    scheduler.stop();
+    client.reconnect();
 });
 
 client.on("close", function() {
-    scheduler.stop()
-    exit(1);
+    scheduler.stop();
 });
 
 client.on('message', function (topic, message) {
@@ -304,4 +324,9 @@ client.on('message', function (topic, message) {
       const device = topic.split("/")[1];
       gotDeviceResponse(device, message);
     }
-})
+});
+
+process.once('SIGTERM', function (code) {
+    debug(`SIGTERM received...${code}`);
+    client.end(false);
+});
