@@ -113,6 +113,9 @@ function reloadConfig(device) {
     config[device].currentApplet = -1;
     config[device].currentAppletStartedAt = 0;
     config[device].sendingStatus.isCurrentlySending = false;
+    config[device].sendingStatus.hasSentLength = false;
+    config[device].sendingStatus.currentBufferPos = 0;
+    config[device].sendingStatus.buf = null;
 }
 
 async function deviceLoop(device) {
@@ -217,7 +220,7 @@ function render(name, config) {
             }
         }
         let outputError = "";
-        let unedited = fs.readFileSync(`${APPLET_FOLDER}/${name}/${name}.star`).toString()
+        let unedited = fs.readFileSync(`${APPLET_FOLDER}/${name}/${name}.star`).toString();
 
         if (typeof process.env.REDIS_HOSTNAME !== 'undefined') {
             if(unedited.indexOf(`load("cache.star", "cache")`) != -1) {
@@ -240,16 +243,18 @@ function render(name, config) {
         }, 10000);
 
         renderCommand.stdout.on('data', (data) => {
-            outputError += data
+            outputError += data;
         })
 
         renderCommand.stderr.on('data', (data) => {
-            outputError += data
+            outputError += data;
         })
     
-        renderCommand.on('close', async (code) => {
+        renderCommand.on('close', (code) => {
             clearTimeout(timeout);
-            await fs.promises.unlink(`${APPLET_FOLDER}/${name}/${name}.tmp.star`);
+            if (fs.existsSync(`${APPLET_FOLDER}/${name}/${name}.tmp.star`)) {
+                fs.unlinkSync(`${APPLET_FOLDER}/${name}/${name}.tmp.star`);
+            }
             if(code == 0) {
                 if(outputError.indexOf("skip_execution") == -1) {
                     debug(`rendered ${name} successfully!`);
@@ -273,13 +278,13 @@ client.on('connect', function () {
                 
                 //Setup job to work on device.
                 const task = new Task('simple task', () => {
-                    deviceLoop(device)
+                    deviceLoop(device);
                 });
                 
                 const job = new SimpleIntervalJob(
                     { seconds: DEVICE_LOOP_INTERVAL, runImmediately: true },
                     task,
-                    { id: `loop_${device}` }
+                    { id: `loop_${device}` },
                 );
 
                 scheduler.addSimpleIntervalJob(job);
