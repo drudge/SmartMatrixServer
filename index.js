@@ -99,8 +99,20 @@ while ((file = directory.readSync()) !== null) {
 
 directory.closeSync();
 
+function resetDevice(device) {
+    if (!config[device]) {
+        debug("Device not found in config", device);
+        return;
+    }
+    config[device].sendingStatus.isCurrentlySending = false;
+    config[device].sendingStatus.hasSentLength = false;
+    config[device].sendingStatus.currentBufferPos = 0;
+    config[device].sendingStatus.buf = null;
+}
+
 function reloadConfig(device) {
-    let scheduleFilePath = `${CONFIG_FOLDER}/${device.toUpperCase()}.json`;
+    const scheduleFilePath = `${CONFIG_FOLDER}/${device.toUpperCase()}.json`;
+    
     if(!fs.existsSync(scheduleFilePath)) {
         console.log("Schedule file for device does not exist!");
         return;
@@ -108,14 +120,11 @@ function reloadConfig(device) {
 
     debug("Reloading config for device", device);
 
-    let schedule = fs.readFileSync(scheduleFilePath);
+    const schedule = fs.readFileSync(scheduleFilePath);
     config[device].schedule = JSON.parse(schedule);
     config[device].currentApplet = -1;
     config[device].currentAppletStartedAt = 0;
-    config[device].sendingStatus.isCurrentlySending = false;
-    config[device].sendingStatus.hasSentLength = false;
-    config[device].sendingStatus.currentBufferPos = 0;
-    config[device].sendingStatus.buf = null;
+    resetDevice(device);
 }
 
 async function deviceLoop(device) {
@@ -188,22 +197,13 @@ function gotDeviceResponse(device, message) {
         if(message == "DECODE_ERROR" || message == "PUSHED") {
             debug(`${device} ${message}`);
             config[device].currentAppletStartedAt = Date.now();
-            config[device].sendingStatus.isCurrentlySending = false;
-            config[device].sendingStatus.hasSentLength = false;
-            config[device].sendingStatus.currentBufferPos = 0;
-            config[device].sendingStatus.buf = null;
+            resetDevice(device);
         } else if(message == "DEVICE_BOOT") {
             debug(`${device} is online!`);
-            config[device].sendingStatus.isCurrentlySending = false;
-            config[device].sendingStatus.hasSentLength = false;
-            config[device].sendingStatus.currentBufferPos = 0;
-            config[device].sendingStatus.buf = null;
+            resetDevice(device);
         } else if(message == "TIMEOUT") {
             debug(`${device} rx timeout!`);
-            config[device].sendingStatus.isCurrentlySending = false;
-            config[device].sendingStatus.hasSentLength = false;
-            config[device].sendingStatus.currentBufferPos = 0;
-            config[device].sendingStatus.buf = null;
+            resetDevice(device);
         }
         config[device].connected = true;
     }
@@ -293,10 +293,7 @@ client.on('connect', function () {
                 dog.on('reset', () => {
                     console.log(`Device ${device} disconnected.`);
                     config[device].connected = false;
-                    config[device].sendingStatus.isCurrentlySending = false;
-                    config[device].sendingStatus.hasSentLength = false;
-                    config[device].sendingStatus.currentBufferPos = 0;
-                    config[device].sendingStatus.buf = null;
+                    resetDevice(device);
                 })
                 dog.on('feed',  () => {
                     config[device].connected = true;
