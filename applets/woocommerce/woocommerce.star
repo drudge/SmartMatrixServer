@@ -1,7 +1,10 @@
-load("render.star", "render")
+load("cache.star", "cache")
 load("encoding/base64.star", "base64")
+load("encoding/json.star", "json")
 load("http.star", "http")
+load("humanize.star", "humanize")
 load("math.star", "math")
+load("render.star", "render")
 load("schema.star", "schema")
 load("time.star", "time")
 
@@ -24,25 +27,9 @@ PuKnlafeQiAztmJGMRyJSxRXR+IcxeJI3KNYbMWMESMuUdz8xBJTnGKNoiiKYo3pL0a8oiiKp70Y8Yni
 HdOReNj5AhvkPSjlOa7aAAAAAElFTkSuQmCC
 """)
 
-def commaize(number):
-    text = str(number)
-    parts = text.split(".")
-    ret = ""
-
-    if len(parts) > 1:
-        ret = "."
-        ret += parts[1]
-    
-    for i in range(len(parts[0]) - 1,-1,-1):
-        if (len(parts[0]) - i - 1) % 3 == 0 and i != len(parts[0]) - 1:
-            ret = "," + ret
-        ret = parts[0][i] + ret
-    
-    return ret
-
 def SiteLogo(image_url = None):
     if image_url != None:
-        res =  http.get(image_url)
+        res = http.get(image_url)
 
         if res.status_code == 200:
             return render.Padding(
@@ -51,19 +38,19 @@ def SiteLogo(image_url = None):
                     src = res.body(),
                     width = 16,
                     height = 16,
-                )
+                ),
             )
-    
+
     return None
 
-def Revenue(revenue, change = None, has_image = True, currency_symbol = "$"):    
+def Revenue(revenue, change = None, has_image = True, currency_symbol = "$"):
     has_change = (change != None and change > 0)
     if has_change:
-        change_color="#1bdd5f"
+        change_color = "#1bdd5f"
         change_image = UP_ARROW
         change_text = "Up"
     else:
-        change_color="#ff0000"
+        change_color = "#ff0000"
         change_image = DOWN_ARROW
         change_text = "Down"
 
@@ -72,7 +59,7 @@ def Revenue(revenue, change = None, has_image = True, currency_symbol = "$"):
     revenue_padding = 0 if (has_image or has_change) else 5
     change_image = render.Padding(
         child = render.Image(src = UP_ARROW if change > 0 else DOWN_ARROW),
-        pad = (0, 0, 1, 0)
+        pad = (0, 0, 1, 0),
     ) if has_change else None
 
     return render.Box(
@@ -81,11 +68,11 @@ def Revenue(revenue, change = None, has_image = True, currency_symbol = "$"):
             main_align = "center",
             cross_align = "center",
             children = [
-                  render.Padding(
+                render.Padding(
                     pad = (0, revenue_padding, 0, 0),
                     child = render.Text(
-                        content = "%s%s" % (currency_symbol, commaize(int(revenue))),
-                        font="6x13",
+                        content = "%s%s" % (currency_symbol, humanize.int("#,###.", int(revenue))),
+                        font = "6x13",
                     ),
                 ),
                 render.Padding(
@@ -99,12 +86,12 @@ def Revenue(revenue, change = None, has_image = True, currency_symbol = "$"):
                                 pad = (0, 1, 0, 0),
                                 child = render.Text(
                                     content = change_text,
-                                    font = "tom-thumb", 
+                                    font = "tom-thumb",
                                     color = change_color,
-                                )
+                                ),
                             ),
-                        ]
-                    )
+                        ],
+                    ),
                 ),
             ],
         ),
@@ -121,19 +108,23 @@ def get_revenue(host, consumer_key, consumer_secret, date_from = None, date_to =
 
     url = "%s%s" % (host, path)
     auth = base64.encode("%s:%s" % (consumer_key, consumer_secret))
+    revenue = None
+    cached_revenue = cache.get(url)
 
-    res = http.get(url, headers = {
-        "Authorization": "Basic %s" % auth,
-        "Content-Type": "application/json",
-    })
+    if cached_revenue != None:
+        revenue = json.decode(cached_revenue)
+    else:
+        res = http.get(url, headers = {
+            "Authorization": "Basic %s" % auth,
+            "Content-Type": "application/json",
+        })
 
-    if res.status_code == 200:
-        json = res.json()
-
-        if len(json) > 0:
-            return json[0]
-
-    return None
+        if res.status_code == 200:
+            results = res.json()
+            if len(results) > 0:
+                revenue = results[0]
+                cache.set(url, json.encode(revenue), ttl_seconds = 240)
+    return revenue
 
 def main(config):
     host = config.get("host", DEFAULT_REST_API_HOST)
@@ -143,8 +134,8 @@ def main(config):
     compare_to_period = config.get("compare_to", DEFAULT_COMPARE_TO_DURATION)
     time_zone = config.get("$tz", DEFAULT_TIMEZONE)
 
-    print("host: %s" % host)
-    
+    # print("host: %s" % host)
+
     status_message = None
     todays_sales = None
     last_year_sales = None
@@ -169,7 +160,7 @@ def main(config):
     todays_sales = float(ty_revenue["total_sales"])
     total_orders = int(ty_revenue["total_orders"])
     orders_str = "order%s" % ("s" if total_orders != 1 else "")
-    status_message = "%s %s as of %s" % (commaize(total_orders), orders_str, updated_at)
+    status_message = "%s %s as of %s" % (humanize.comma(total_orders), orders_str, updated_at)
 
     ly_revenue = get_revenue(
         host,
@@ -183,7 +174,7 @@ def main(config):
         last_year_sales = float(ly_revenue["total_sales"])
         if last_year_sales > 0:
             change = math.ceil(todays_sales / last_year_sales * 100 - 100)
-    
+
     logo = SiteLogo("%s/favicon.ico" % host) if show_site_icon else None
 
     status_bar = render.Padding(
@@ -201,22 +192,22 @@ def main(config):
                         font = "tom-thumb",
                     ),
                 ),
-            )
-        )
+            ),
+        ),
     ) if status_message else None
 
     return render.Root(
         child = render.Stack(
             children = [
-               Revenue(
-                   revenue = todays_sales,
-                   change = change,
-                   has_image = logo != None,
+                Revenue(
+                    revenue = todays_sales,
+                    change = change,
+                    has_image = logo != None,
                 ),
-               status_bar,
-               logo,
+                status_bar,
+                logo,
             ],
-        )
+        ),
     )
 
 def get_schema():
@@ -251,7 +242,7 @@ def get_schema():
                 id = "consumer_secret",
                 name = "Consumer secret",
                 desc = "REST API Consumer secret",
-                icon = "password",
+                icon = "userSecret",
                 default = DEFAULT_REST_API_CONSUMER_SECRET,
             ),
             schema.Toggle(
