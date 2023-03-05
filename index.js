@@ -19,22 +19,30 @@ REDIS_[HOSTNAME,USERNAME,PASSWORD],
 
 const client  = mqtt.connect(process.env.MQTT_HOSTNAME, {
     username: process.env.MQTT_USERNAME,
-    password: process.env.MQTT_PASSWORD
+    password: process.env.MQTT_PASSWORD,
 });
 
-let { CONFIG_FOLDER } = process.env
+const DEVICE_TOPIC_PREFIX = process.env.SMARTMATRIX_TOPIC_PREFIX || 'plm';
+console.log("Using device topic prefix:", DEVICE_TOPIC_PREFIX);
+let { CONFIG_FOLDER } = process.env;
 if(CONFIG_FOLDER === undefined) {
     console.log("CONFIG_FOLDER not set, using `/config` ...");
     CONFIG_FOLDER = "/config";
 }
 
-let { APPLET_FOLDER } = process.env
+let { APPLET_FOLDER } = process.env;
 if(APPLET_FOLDER === undefined) {
     console.log("APPLET_FOLDER not set, using `/applets` ...");
     APPLET_FOLDER = "/applets";
 }
+let { DEVICE_TIMEOUT } = process.env;
+if(DEVICE_TIMEOUT === undefined) {
+    console.log("DEVICE_TIMEOUT not set, using 60 seconds ...");
+    DEVICE_TIMEOUT = "60000";
+}
+DEVICE_TIMEOUT = parseInt(DEVICE_TIMEOUT, 10);
 
-let { DEVICE_LOOP_INTERVAL } = process.env
+let { DEVICE_LOOP_INTERVAL } = process.env;
 if(DEVICE_LOOP_INTERVAL === undefined) {
     console.log("DEVICE_LOOP_INTERVAL not set, using 1 second ...");
     DEVICE_LOOP_INTERVAL = "1";
@@ -64,9 +72,7 @@ while ((file = directory.readSync()) !== null) {
 
     let schedule = fs.readFileSync(scheduleFilePath);
 
-    fs.watchFile(scheduleFilePath, async () => {
-        await reloadConfig(device);
-    });
+    fs.watchFile(scheduleFilePath, () => reloadConfig(device));
 
     let postProcessFilePath = `${CONFIG_FOLDER}/${device.toUpperCase()}.post.js`;
     let postProcess;
@@ -79,6 +85,7 @@ while ((file = directory.readSync()) !== null) {
     }
 
     config[device] = {
+        pinApplet: false,
         currentApplet: -1,
         currentAppletStartedAt: 0,
         connected: false,
@@ -112,7 +119,7 @@ function resetDevice(device) {
 
 function reloadConfig(device) {
     const scheduleFilePath = `${CONFIG_FOLDER}/${device.toUpperCase()}.json`;
-    
+
     if(!fs.existsSync(scheduleFilePath)) {
         console.log("Schedule file for device does not exist!");
         return;
@@ -127,6 +134,17 @@ function reloadConfig(device) {
     resetDevice(device);
 }
 
+function resetAppletIfNeeded(device) { 
+    if (config[device].pinApplet) {
+        // debug("Applet pinned, not resetting applet for device", device);
+        return;
+    }
+    if(config[device].currentApplet >= (config[device].schedule.length - 1)) {
+        debug("Resetting rotation for device", device);
+        config[device].currentApplet = -1;
+    }
+}
+
 async function deviceLoop(device) {
     // debug("deviceLoop", device);
     if(config[device].jobRunning || config[device].connected == false) {
@@ -135,11 +153,17 @@ async function deviceLoop(device) {
 
     config[device].jobRunning = true;
 
-    const nextAppletNeedsRunAt = config[device].currentAppletStartedAt + (config[device].schedule[config[device].currentApplet+1].duration * 1000);
+    let nextApplet = config[device].currentApplet+1;
+    const scheduleLength = config[device].schedule.length;
+    if (nextApplet >= scheduleLength) {
+        nextApplet = 0;
+    }
+    const nextAppletNeedsRunAt = config[device].currentAppletStartedAt + (config[device].schedule[nextApplet].duration * 1000);
 
     if(Date.now() > nextAppletNeedsRunAt && !config[device].sendingStatus.isCurrentlySending) {
-        config[device].currentApplet++;
-
+        debug("applet pinned? %s", config[device].pinApplet ? "yes" : "no")
+        if (!config[device].pinApplet || config[device].currentApplet === -1) config[device].currentApplet++;
+        debug("rotation: %i of %i", config[device].currentApplet+1, config[device].schedule.length);
         const applet = config[device].schedule[config[device].currentApplet];
         config[device].sendingStatus.isCurrentlySending = true;
 
@@ -147,26 +171,24 @@ async function deviceLoop(device) {
 
         let imageData = await render(applet.name, applet.config ?? {}).catch(async (e) => {
             //upon failure, skip applet and retry.
-            console.log(e);
-            config[device].currentApplet++;
+            console.error(e);
             config[device].sendingStatus.isCurrentlySending = false;
-            if(config[device].currentApplet >= (config[device].schedule.length - 1)) {
-                config[device].currentApplet = -1;
+            if (!config[device].pinApplet) {
+                config[device].currentApplet++;
+                resetAppletIfNeeded(device);
             }
-            setTimeout(() => {
-                deviceLoop(device);
-            }, 5);
-        })
+            setTimeout(() => deviceLoop(device), 5);
+        });
 
         if(config[device].sendingStatus.isCurrentlySending) {
             config[device].sendingStatus.buf = new Uint8Array(imageData);
             config[device].sendingStatus.currentBufferPos = 0;
             config[device].sendingStatus.hasSentLength = false;
 
-            client.publish(`plm/${device}/rx`, "START");
+            client.publish(`${DEVICE_TOPIC_PREFIX}/${device}/rx`, "START");
 
-            if(config[device].currentApplet >= (config[device].schedule.length - 1)) {
-                config[device].currentApplet = -1;
+            if (!config[device].pinApplet) {
+                resetAppletIfNeeded(device);
             }
         }
 
@@ -178,20 +200,52 @@ async function deviceLoop(device) {
     config[device].jobRunning = false;
 }
 
-function gotDeviceResponse(device, message) {
+function togglePinning(device) {
+    const newVal = !config[device].pinApplet;
+    setPinned(device, newVal);
+}
+
+function setPinned(device, pinned) {
+    if (config[device].currentApplet === -1) return;
+    const applet = config[device].schedule[config[device].currentApplet];
+    debug(`${pinned ? 'Pinning' : 'Unpinning'} ${applet.name} applet on device`, device)
+    config[device].pinApplet = pinned;
+
+    if (!pinned) {
+        resetAppletIfNeeded(device);
+    }
+}
+
+function pinApplet(device, index) {
+    const scheduleLength = config[device].schedule.length;
+    if (index >= scheduleLength) {
+        debug("Pin failed: Invalid applet index", index, "for device", device);
+        return;
+    }
+    config[device].currentApplet = index;
+    setPinned(device, true);
+}
+
+function handleDeviceResponse(device, payload) {
     config[device].offlineWatchdog.feed();
-    if(message == "OK") {
+    const message = payload.toString('utf8');
+    if (message == "PIN" || message == "UNPIN") {
+        togglePinning(device);
+    } else if (message.indexOf("PIN:") === 0) {
+        const val = message.split("PIN:")[1];
+        pinApplet(device, parseInt(val, 10));
+    } else if(message == "OK") {
         if(config[device].sendingStatus.buf !== null && config[device].sendingStatus.currentBufferPos <= config[device].sendingStatus.buf.length) {
             if(config[device].sendingStatus.hasSentLength == false) {
                 config[device].sendingStatus.hasSentLength = true;
-                client.publish(`plm/${device}/rx`, config[device].sendingStatus.buf.length.toString());
+                client.publish(`${DEVICE_TOPIC_PREFIX}/${device}/rx`, config[device].sendingStatus.buf.length.toString());
             } else {
                 let chunk = config[device].sendingStatus.buf.slice(config[device].sendingStatus.currentBufferPos, config[device].sendingStatus.currentBufferPos+chunkSize);
                 config[device].sendingStatus.currentBufferPos += chunkSize;
-                client.publish(`plm/${device}/rx`, chunk);
+                client.publish(`${DEVICE_TOPIC_PREFIX}/${device}/rx`, chunk);
             }
         } else {
-            client.publish(`plm/${device}/rx`, "FINISH");
+            client.publish(`${DEVICE_TOPIC_PREFIX}/${device}/rx`, "FINISH");
         }
     } else {
         if(message == "DECODE_ERROR" || message == "PUSHED") {
@@ -270,65 +324,63 @@ function render(name, config) {
     })
 }
 
-client.on('connect', function () {
+function onDeviceConnect() {
     for(const [device, _] of Object.entries(config)) {
-        client.subscribe(`plm/${device}/tx`, function (err) {
+        client.subscribe(`${DEVICE_TOPIC_PREFIX}/${device}/tx`, function (err) {
             if (!err) {
-                client.publish(`plm/${device}/rx`, "PING");
+                client.publish(`${DEVICE_TOPIC_PREFIX}/${device}/rx`, "PING");
                 
-                //Setup job to work on device.
-                const task = new Task('simple task', () => {
-                    deviceLoop(device);
+                const task = new Task(`run_${device}_loop`, () => deviceLoop(device));
+                const options = {
+                    seconds: DEVICE_LOOP_INTERVAL,
+                    runImmediately: true,
+                };
+                const job = new SimpleIntervalJob(options, task, {
+                    id: `loop_${device}`,
                 });
-                
-                const job = new SimpleIntervalJob(
-                    { seconds: DEVICE_LOOP_INTERVAL, runImmediately: true },
-                    task,
-                    { id: `loop_${device}` },
-                );
+                const dog = new Watchdog(DEVICE_TIMEOUT);
 
                 scheduler.addSimpleIntervalJob(job);
 
-                const dog = new Watchdog(60000);
                 dog.on('reset', () => {
-                    console.log(`Device ${device} disconnected.`);
+                    debug(`Device ${device} disconnected.`);
                     config[device].connected = false;
                     resetDevice(device);
-                })
+                });
                 dog.on('feed',  () => {
                     config[device].connected = true;
-                })
+                });
 
                 config[device].offlineWatchdog = dog;
             } else {
                 debug(`Couldn't subscribe to ${device} response channel.`);
             }
-        })
+        });
     }
-});
+}
 
-client.on("disconnect", function() {
-    scheduler.stop();
-    client.reconnect();
-});
-
-client.on("error", function() {
-    scheduler.stop();
-    client.reconnect();
-});
-
-client.on("close", function() {
-    scheduler.stop();
-});
-
-client.on('message', function (topic, message) {
+function onDeviceMessage(topic, message) {
     if(topic.indexOf("tx") != -1) {
       const device = topic.split("/")[1];
-      gotDeviceResponse(device, message);
+      handleDeviceResponse(device, message);
     }
-});
+}
 
-process.once('SIGTERM', function (code) {
-    debug(`SIGTERM received...${code}`);
-    client.end(false);
-});
+function onGracefulExit(code) {
+    debug(`Graceful exit received...${code}`);
+    client.end(false)
+}
+
+function onDisconnect(reconnect = true) {
+    scheduler.stop();
+    if (reconnect) {
+        client.reconnect();
+    }
+}
+
+client.on('connect', onDeviceConnect);
+client.on("disconnect", onDisconnect);
+client.on("error", onDisconnect);
+client.on("close", onDisconnect.bind(this, false));
+client.on('message', onDeviceMessage);
+process.once('SIGTERM', onGracefulExit);
