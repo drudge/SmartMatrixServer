@@ -1,5 +1,6 @@
-const mqtt = require('mqtt')
+const mqtt = require('mqtt');
 const fs = require('fs');
+const ms = require('ms');
 const { ToadScheduler, SimpleIntervalJob, Task } = require('toad-scheduler');
 const { Watchdog } = require("watchdog");
 const { exit } = require('process');
@@ -38,17 +39,25 @@ if(APPLET_FOLDER === undefined) {
 let { DEVICE_TIMEOUT } = process.env;
 if(DEVICE_TIMEOUT === undefined) {
     console.log("DEVICE_TIMEOUT not set, using 60 seconds ...");
-    DEVICE_TIMEOUT = "60000";
+    DEVICE_TIMEOUT = ms("60s");
 }
-DEVICE_TIMEOUT = parseInt(DEVICE_TIMEOUT, 10);
+DEVICE_TIMEOUT = ms(DEVICE_TIMEOUT);
 
 let { DEVICE_LOOP_INTERVAL } = process.env;
 if(DEVICE_LOOP_INTERVAL === undefined) {
-    console.log("DEVICE_LOOP_INTERVAL not set, using 1 second ...");
-    DEVICE_LOOP_INTERVAL = "1";
+    console.log("DEVICE_LOOP_INTERVAL not set, using 10 second ...");
+    DEVICE_LOOP_INTERVAL = ms("10s");
 }
-DEVICE_LOOP_INTERVAL = parseInt(DEVICE_LOOP_INTERVAL, 10);
 console.log(`Devices will loop every ${DEVICE_LOOP_INTERVAL} seconds`);
+DEVICE_LOOP_INTERVAL = ms(DEVICE_LOOP_INTERVAL);
+
+let { DEVICE_PING_INTERVAL } = process.env;
+if(DEVICE_PING_INTERVAL === undefined) {
+    console.log("DEVICE_PING_INTERVAL not set, using 30 seconds ...");
+    DEVICE_PING_INTERVAL = ms("30s");
+}
+console.log(`Devices will ping every ${DEVICE_PING_INTERVAL} seconds`);
+DEVICE_PING_INTERVAL = ms(DEVICE_PING_INTERVAL);
 
 const scheduler = new ToadScheduler();
 let chunkSize = 19950;
@@ -145,6 +154,13 @@ function resetAppletIfNeeded(device) {
     }
 }
 
+function moveToNextApplet(device) {
+    config[device].sendingStatus.isCurrentlySending = false;
+    config[device].currentApplet++;
+    resetAppletIfNeeded(device);
+    setTimeout(() => deviceLoop(device), 5);
+}
+
 async function deviceLoop(device) {
     // debug("deviceLoop", device);
     if(config[device].jobRunning || config[device].connected == false) {
@@ -162,31 +178,44 @@ async function deviceLoop(device) {
 
     if(Date.now() > nextAppletNeedsRunAt && !config[device].sendingStatus.isCurrentlySending) {
         debug("applet pinned? %s", config[device].pinApplet ? "yes" : "no")
-        if (!config[device].pinApplet || config[device].currentApplet === -1) config[device].currentApplet++;
-        debug("rotation: %i of %i", config[device].currentApplet+1, config[device].schedule.length);
+        let oldApplet = config[device].currentApplet;
+        if (oldApplet === -1) oldApplet = 0;
+        if (!config[device].pinApplet) config[device].currentApplet = nextApplet;
+        debug("rotation: %i of %i", oldApplet + 1, scheduleLength);
         const applet = config[device].schedule[config[device].currentApplet];
         config[device].sendingStatus.isCurrentlySending = true;
 
         debug("rendering applet", applet.name, "for device", device);
 
-        let imageData = await render(applet.name, applet.config ?? {}).catch(async (e) => {
-            //upon failure, skip applet and retry.
-            console.error(e);
-            config[device].sendingStatus.isCurrentlySending = false;
-            if (!config[device].pinApplet) {
-                config[device].currentApplet++;
-                resetAppletIfNeeded(device);
-            }
-            setTimeout(() => deviceLoop(device), 5);
-        });
+        let imageData;
+        let skipped = false;
+        try {
+            const res = await render(applet.name, applet.config ?? {});
+            imageData = res.imageData;
+            skipped = res.skipped;
+        } catch (error) {
+            debug('error: ', error);
+            if (config[device].pinApplet) setPinned(device, false);
+            moveToNextApplet(device);
+        }
 
-        if(config[device].sendingStatus.isCurrentlySending) {
+        if (skipped) {
+            if (config[device].pinApplet) setPinned(device, false);
+            moveToNextApplet(device);
+        }
+
+        if(config[device].sendingStatus.isCurrentlySending && imageData) {
             config[device].sendingStatus.buf = new Uint8Array(imageData);
             config[device].sendingStatus.currentBufferPos = 0;
             config[device].sendingStatus.hasSentLength = false;
 
-            client.publish(`${DEVICE_TOPIC_PREFIX}/${device}/rx`, "START");
+            publishToDevice(device, "START");
 
+            if (config[device].schedule && config[device].schedule[nextApplet] && typeof config[device].schedule[nextApplet].focus !== 'undefined') {
+                config[device].currentApplet = nextApplet;
+                setPinned(device, !!config[device].schedule[nextApplet].focus);
+            }
+            
             if (!config[device].pinApplet) {
                 resetAppletIfNeeded(device);
             }
@@ -226,36 +255,39 @@ function pinApplet(device, index) {
     setPinned(device, true);
 }
 
+function publishToDevice(device, message) {
+    return client.publish(`${DEVICE_TOPIC_PREFIX}/${device}/rx`, message);
+}
+
 function handleDeviceResponse(device, payload) {
-    config[device].offlineWatchdog.feed();
     const message = payload.toString('utf8');
     if (message == "PIN" || message == "UNPIN") {
         togglePinning(device);
     } else if (message.indexOf("PIN:") === 0) {
         const val = message.split("PIN:")[1];
         pinApplet(device, parseInt(val, 10));
-    } else if(message == "OK") {
+    } else if(message === "OK") {
         if(config[device].sendingStatus.buf !== null && config[device].sendingStatus.currentBufferPos <= config[device].sendingStatus.buf.length) {
             if(config[device].sendingStatus.hasSentLength == false) {
                 config[device].sendingStatus.hasSentLength = true;
-                client.publish(`${DEVICE_TOPIC_PREFIX}/${device}/rx`, config[device].sendingStatus.buf.length.toString());
+                publishToDevice(device, config[device].sendingStatus.buf.length.toString());
             } else {
                 let chunk = config[device].sendingStatus.buf.slice(config[device].sendingStatus.currentBufferPos, config[device].sendingStatus.currentBufferPos+chunkSize);
                 config[device].sendingStatus.currentBufferPos += chunkSize;
-                client.publish(`${DEVICE_TOPIC_PREFIX}/${device}/rx`, chunk);
+                publishToDevice(device, chunk);
             }
         } else {
-            client.publish(`${DEVICE_TOPIC_PREFIX}/${device}/rx`, "FINISH");
+            publishToDevice(device, "FINISH");
         }
     } else {
-        if(message == "DECODE_ERROR" || message == "PUSHED") {
+        if(message === "DECODE_ERROR" || message === "PUSHED") {
             debug(`${device} ${message}`);
             config[device].currentAppletStartedAt = Date.now();
             resetDevice(device);
-        } else if(message == "DEVICE_BOOT") {
+        } else if(message === "DEVICE_BOOT") {
             debug(`${device} is online!`);
             resetDevice(device);
-        } else if(message == "TIMEOUT") {
+        } else if(message === "TIMEOUT") {
             debug(`${device} rx timeout!`);
             resetDevice(device);
         }
@@ -312,46 +344,65 @@ function render(name, config) {
             if(code == 0) {
                 if(outputError.indexOf("skip_execution") == -1) {
                     debug(`rendered ${name} successfully!`);
-                    resolve(fs.readFileSync(`${APPLET_FOLDER}/${name}/${name}.webp`));
+                    resolve({
+                        skipped: false,
+                        imageData: fs.readFileSync(`${APPLET_FOLDER}/${name}/${name}.webp`),
+                    });
                 } else {
-                    reject("Applet requested to skip execution...");
+                    debug(`skipped ${name}!`);
+                    resolve({ skipped: true, imageData: null });
                 }
             } else {
                 console.error(outputError);
-                reject("Applet failed to render.");
+                const err = new Error("Applet failed to render");
+                err.cause = outputError;
+                reject(err);
             }
         });
     })
 }
 
+function addJob(scheduler, type, device) {
+    let job = null;
+    let options = { runImmediately: true };
+    const id = `${type}_${device}`;
+    if (type == "loop") {
+        options = {
+            ...options,
+            milliseconds: Number.isInteger(DEVICE_LOOP_INTERVAL) ? DEVICE_LOOP_INTERVAL : ms(DEVICE_LOOP_INTERVAL),
+        };
+        // debug(`Adding loop job for ${device}...`);
+        // debug(options);
+        job = new SimpleIntervalJob(options, new Task(id, () => deviceLoop(device)), { id });
+    } else if (type == "ping") {
+        options = {
+            ...options,
+            milliseconds: Number.isInteger(DEVICE_PING_INTERVAL) ? DEVICE_PING_INTERVAL : ms(DEVICE_PING_INTERVAL),
+        };
+        // debug(`Adding ping job for ${device}...`);
+        // debug(options);
+        job = new SimpleIntervalJob(options, new Task(id, () => publishToDevice(device, "PING")), { id });
+    }
+
+    if (job !== null && scheduler) {
+        scheduler.addSimpleIntervalJob(job);
+    }
+
+    return job;
+}
+
 function onDeviceConnect() {
     for(const [device, _] of Object.entries(config)) {
         client.subscribe(`${DEVICE_TOPIC_PREFIX}/${device}/tx`, function (err) {
-            if (!err) {
-                client.publish(`${DEVICE_TOPIC_PREFIX}/${device}/rx`, "PING");
-                
-                const task = new Task(`run_${device}_loop`, () => deviceLoop(device));
-                const options = {
-                    seconds: DEVICE_LOOP_INTERVAL,
-                    runImmediately: true,
-                };
-                const job = new SimpleIntervalJob(options, task, {
-                    id: `loop_${device}`,
-                });
-                const dog = new Watchdog(DEVICE_TIMEOUT);
-
-                scheduler.addSimpleIntervalJob(job);
-
-                dog.on('reset', () => {
-                    debug(`Device ${device} disconnected.`);
-                    config[device].connected = false;
-                    resetDevice(device);
-                });
-                dog.on('feed',  () => {
-                    config[device].connected = true;
-                });
-
-                config[device].offlineWatchdog = dog;
+            if (!err) {    
+                if (!config[device].offlineWatchdog) {            
+                    const dog = new Watchdog(Number.isInteger(DEVICE_TIMEOUT) ? DEVICE_TIMEOUT : ms(DEVICE_TIMEOUT));
+                    config[device].offlineWatchdog = dog;
+                    dog.on('reset', () => onDeviceDisconnect(device));
+                    dog.on('feed', () => onDeviceUpdated(device));
+                    addJob(scheduler, "loop", device);
+                    addJob(scheduler, "ping", device);
+                }
             } else {
                 debug(`Couldn't subscribe to ${device} response channel.`);
             }
@@ -359,16 +410,27 @@ function onDeviceConnect() {
     }
 }
 
+function onDeviceUpdated(device) {
+    config[device].connected = true;
+}
+
+function onDeviceDisconnect(device) {
+    debug(`Device ${device} disconnected.`);
+    config[device].connected = false;
+    resetDevice(device);
+}
+
 function onDeviceMessage(topic, message) {
     if(topic.indexOf("tx") != -1) {
       const device = topic.split("/")[1];
+      config[device].offlineWatchdog.feed();
       handleDeviceResponse(device, message);
     }
 }
 
 function onGracefulExit(code) {
     debug(`Graceful exit received...${code}`);
-    client.end(false)
+    client.end(false);
 }
 
 function onDisconnect(reconnect = true) {
