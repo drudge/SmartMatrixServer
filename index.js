@@ -1,11 +1,13 @@
-const mqtt = require('mqtt');
+const fetch = require('node-fetch-commonjs');
 const fs = require('fs');
+const mqtt = require('mqtt');
 const ms = require('ms');
 const { ToadScheduler, SimpleIntervalJob, Task } = require('toad-scheduler');
 const { Watchdog } = require("watchdog");
 const { exit } = require('process');
-const { spawn } = require("child_process");
+const { spawn } = require('child_process');
 const { debuglog } = require('util');
+const querystring = require('querystring');
 
 const debug = debuglog("smart-matrix-server");
 
@@ -158,7 +160,25 @@ function moveToNextApplet(device) {
     config[device].sendingStatus.isCurrentlySending = false;
     config[device].currentApplet++;
     resetAppletIfNeeded(device);
-    setTimeout(() => deviceLoop(device), 5);
+}
+
+async function renderApplet(applet) {
+    const source = applet.source || "local";
+    const config =  applet.config ?? {};
+
+    if (source === "local") {
+        return render(applet.name, config);
+    } else if(source === "tidbyt") {
+        const qs = querystring.stringify(config);
+        const response = await fetch(`https://prod.tidbyt.com/app-server/preview/${applet.name}.webp?${qs}`);
+        const data = await response.arrayBuffer();
+        return {
+            skipped: false,
+            imageData: data,
+        };
+    }
+
+    throw new Error(`Unknown source ${source}. Use local or tidbyt.`);
 }
 
 async function deviceLoop(device) {
@@ -184,13 +204,14 @@ async function deviceLoop(device) {
         debug("rotation: %i of %i", oldApplet + 1, scheduleLength);
         const applet = config[device].schedule[config[device].currentApplet];
         config[device].sendingStatus.isCurrentlySending = true;
+        const source = applet.source || 'local';
 
-        debug("rendering applet", applet.name, "for device", device);
+        debug("rendering applet", applet.name, "from", source, "for device", device);
 
         let imageData;
         let skipped = false;
         try {
-            const res = await render(applet.name, applet.config ?? {});
+            const res = await renderApplet(applet);
             imageData = res.imageData;
             skipped = res.skipped;
         } catch (error) {
