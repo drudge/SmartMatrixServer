@@ -12,21 +12,9 @@ permissions:
   contents: read
   packages: write
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build-and-push:
-    strategy:
-      matrix:
-        include:
-        - arch: amd64
-        - arch: arm64
-          variant: v8
     runs-on: ubuntu-latest
-    env:
-      PLATFORM: linux/${{ matrix.arch }}${{ (matrix.variant != '' && format('/{0}', matrix.variant)) || '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -62,7 +50,7 @@ jobs:
         with:
           push: true
           builder: ${{ steps.buildx.outputs.name }}
-          platforms: ${{ env.PLATFORM }}
+          platforms: linux/arm64,linux/amd64
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
